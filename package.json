@@ -1,0 +1,25 @@
+{
+  "name": "pi-personal-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension suite for building a personal AI development platform. Layer 2 (knowledge & memory) of the personal AI platform stack.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "personal-platform",
+    "memory",
+    "profile"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/profile-injector.ts",
+      "./extensions/memory-tool.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
+  }
+}
