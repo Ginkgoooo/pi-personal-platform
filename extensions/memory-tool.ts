@@ -45,6 +45,12 @@ interface MemoryQueryParams {
   limit?: number
 }
 
+interface ParsedMemoryCommand {
+  mode: 'search' | 'list'
+  query: string
+  limit: number
+}
+
 const MEMORY_DIR = join(homedir(), '.pi', 'memory')
 const STORE_PATH = join(MEMORY_DIR, 'store.jsonl')
 const CATEGORY_VALUES = ['decision', 'preference', 'fact', 'note', 'lesson', 'other']
@@ -105,11 +111,12 @@ function normalizeScope(scope: unknown): Scope {
 /**
  * 归一化项目路径用于比较。
  *
- * Windows 环境下 cwd 可能出现 `D:\\dir` 或 `D:/dir` 两种形式；
- * 严格按当前项目检索时必须先归一化，避免同一项目因斜杠差异查不到记忆。
+ * Windows 环境下 cwd 可能出现 `D:\\dir`、`D:/dir` 或 Git Bash/MSYS 的 `/d/dir` 形式；
+ * 严格按当前项目检索时必须先归一化，避免同一项目因路径写法差异查不到记忆。
  */
 function normalizeProjectPath(projectPath: string | undefined): string {
-  return (projectPath || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  const normalized = (projectPath || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return normalized.replace(/^\/([a-z])\//, '$1:/')
 }
 
 /**
@@ -183,7 +190,27 @@ async function queryMemory(params: MemoryQueryParams, cwd: string): Promise<Memo
     .slice(0, limit)
 }
 
-/** 格式化 /memory 检索结果 */
+/**
+ * 解析 /memory 命令参数。
+ *
+ * 支持两种模式：
+ * - `/memory <query>`：按关键词检索当前项目记忆
+ * - `/memory list [limit]`：盘点当前项目最近记忆，默认 10 条，最多 30 条
+ */
+function parseMemoryCommand(args: string): ParsedMemoryCommand {
+  const text = args.trim()
+  const parts = text.split(/\s+/).filter(Boolean)
+
+  if (parts[0] === 'list') {
+    const rawLimit = Number(parts[1])
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10
+    return { mode: 'list', query: '', limit: Math.min(Math.floor(limit), 30) }
+  }
+
+  return { mode: 'search', query: text, limit: 10 }
+}
+
+/** 格式化 /memory 检索结果，保留 value 全文，方便模型基于记忆回答 */
 function formatMemoryForPrompt(entries: MemoryEntry[]): string {
   return entries
     .map((entry, index) => {
@@ -193,29 +220,49 @@ function formatMemoryForPrompt(entries: MemoryEntry[]): string {
     .join('\n\n')
 }
 
+/** 格式化 /memory list 盘点结果，只给摘要，避免一次性注入过多正文 */
+function formatMemoryListForPrompt(entries: MemoryEntry[]): string {
+  return entries
+    .map((entry, index) => {
+      const scopeLabel = entry.scope === 'project' ? `project:${entry.project || '?'}` : 'global'
+      const preview = entry.value.length > 80 ? `${entry.value.slice(0, 80)}...` : entry.value
+      return `[${index + 1}] id=${entry.id}\ncategory=${entry.category}\nkey=${entry.key}\nscope=${scopeLabel}\nupdatedAt=${entry.updatedAt}\npreview=${preview}`
+    })
+    .join('\n\n')
+}
+
 export default function memoryTool(pi: ExtensionAPI): void {
   // /memory：本地检索命令，不经过 LLM tool schema，且只检索当前项目自己的 project 记忆
   pi.registerCommand('memory', {
     description: 'Search local persistent memories and send the result back into the conversation',
     handler: async (args, ctx) => {
-      const query = args.trim()
-      const hits = await queryMemory({ query, limit: 10 }, ctx.cwd || process.cwd())
+      const command = parseMemoryCommand(args)
+      const cwd = ctx.cwd || process.cwd()
+      const hits = await queryMemory({ query: command.query, limit: command.limit }, cwd)
 
       if (hits.length === 0) {
-        ctx.ui.notify(query ? `No memory matched: ${query}` : 'No visible memory found', 'info')
+        const emptyMessage = command.mode === 'list' ? 'No visible memory found' : `No memory matched: ${command.query}`
+        ctx.ui.notify(emptyMessage, 'info')
         return
       }
 
-      const title = query ? `本地记忆检索结果（query=${query}）` : '本地近期记忆'
-      const body = formatMemoryForPrompt(hits)
+      const title =
+        command.mode === 'list'
+          ? `本地记忆列表（limit=${command.limit}，scope=current-project）`
+          : `本地记忆检索结果（query=${command.query}）`
+      const body = command.mode === 'list' ? formatMemoryListForPrompt(hits) : formatMemoryForPrompt(hits)
+      const instruction =
+        command.mode === 'list'
+          ? '请基于以上本地记忆列表回答主公，说明当前项目有哪些记忆，并引用相关 key 或 id。'
+          : '请基于以上本地记忆回答主公，并引用相关 key 或 id。'
 
       if (!ctx.isIdle()) {
         ctx.ui.notify('Agent is busy. Run /memory after the current response finishes.', 'warning')
         return
       }
 
-      // 把检索结果作为用户消息送回模型，由模型基于本地记忆继续回答主公
-      pi.sendUserMessage(`${title}\n\n${body}\n\n请基于以上本地记忆回答主公，并引用相关 key 或 id。`)
+      // 把检索/盘点结果作为用户消息送回模型，由模型基于当前项目记忆继续回答主公
+      pi.sendUserMessage(`${title}\n\n${body}\n\n${instruction}`)
     },
   })
 
