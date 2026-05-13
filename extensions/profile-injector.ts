@@ -66,9 +66,10 @@ async function safeRead(filePath: string): Promise<string | undefined> {
  * @returns 状态文案；都未加载时返回 undefined（表示清除状态）
  */
 function buildStatusLabel(hasGlobal: boolean, hasProject: boolean): string | undefined {
-	if (hasGlobal && hasProject) return "📜 Profile G+P";
-	if (hasGlobal) return "📜 Profile G";
-	if (hasProject) return "📜 Profile P";
+	// 状态栏避免使用 emoji：部分终端会显示为乱码或重复图标
+	if (hasGlobal && hasProject) return "Profile G+P";
+	if (hasGlobal) return "Profile G";
+	if (hasProject) return "Profile P";
 	return undefined;
 }
 
@@ -112,10 +113,29 @@ function safeSetStatus(ctx: { ui?: { setStatus?: (key: string, value: string | u
 	}
 }
 
+async function loadProfile(cwd: string): Promise<{ globalText: string | undefined; projectText: string | undefined }> {
+	const projectProfilePath = join(cwd, PROJECT_PROFILE_RELATIVE);
+	const [globalText, projectText] = await Promise.all([
+		safeRead(GLOBAL_PROFILE_PATH),
+		safeRead(projectProfilePath),
+	]);
+	return { globalText, projectText };
+}
+
+async function refreshProfileStatus(ctx: { cwd?: string; ui?: { setStatus?: (key: string, value: string | undefined) => void } }): Promise<void> {
+	const { globalText, projectText } = await loadProfile(ctx.cwd || process.cwd());
+	safeSetStatus(ctx, buildStatusLabel(!!globalText, !!projectText));
+}
+
 /**
  * 扩展入口
  */
 export default function profileInjector(pi: ExtensionAPI): void {
+	// session_start 时先刷新状态行；真正的 prompt 注入仍在 before_agent_start 中完成
+	pi.on("session_start", async (_event, ctx) => {
+		await refreshProfileStatus(ctx);
+	});
+
 	// before_agent_start：用户提交输入之后、模型开始推理之前
 	// 此时 event.systemPrompt 已经被 pi 构建完成（含 AGENTS.md 等 contextFiles）
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -123,13 +143,9 @@ export default function profileInjector(pi: ExtensionAPI): void {
 		// 拿不到则 fallback 到 process.cwd()
 		const opts = event.systemPromptOptions;
 		const cwd = opts && opts.cwd ? opts.cwd : process.cwd();
-		const projectProfilePath = join(cwd, PROJECT_PROFILE_RELATIVE);
 
 		// 并行读两个文件，提升启动速度
-		const [globalText, projectText] = await Promise.all([
-			safeRead(GLOBAL_PROFILE_PATH),
-			safeRead(projectProfilePath),
-		]);
+		const { globalText, projectText } = await loadProfile(cwd);
 
 		const merged = mergeProfile(globalText, projectText);
 		const status = buildStatusLabel(!!globalText, !!projectText);

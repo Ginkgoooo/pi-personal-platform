@@ -29,9 +29,9 @@
 
 **TUI 状态行标识：**
 
-- `📜 Profile G+P` 全局 + 项目级同时加载
-- `📜 Profile G` 仅全局
-- `📜 Profile P` 仅项目级
+- `Profile G+P` 全局 + 项目级同时加载
+- `Profile G` 仅全局
+- `Profile P` 仅项目级
 - （都未配置则不显示）
 
 ### memory-tool
@@ -60,6 +60,25 @@
 - `scope="global"`：跨项目共享，适合主公个人偏好；当前 `/memory` 不自动检索 global 记忆
 - 当前阶段 `/memory` 只返回当前工作目录绑定的 project 记忆，避免跨项目串扰
 
+### auto-memory-injector
+
+会话中每次 agent 开始推理前，自动读取 `~/.pi/memory/store.jsonl`，把少量本地记忆摘要追加到 system prompt，减少手动 `/memory list` 的次数。
+
+**注入规则：**
+
+- 当前项目 `scope="project"` 记忆：最多 5 条，按 `updatedAt` 倒序
+- 全局 `scope="global"` 记忆：最多 3 条，按 `updatedAt` 倒序
+- 只注入摘要 preview，不注入完整正文；需要全文时仍使用 `/memory <query>`
+- 忽略 `deleted=true` 记忆
+- 读取失败、单行 JSON 损坏、没有可见记忆时均静默跳过
+
+**TUI 状态行标识：**
+
+- `Memory P5+G3` 当前项目 5 条 + 全局 3 条
+- `Memory P5` 仅当前项目记忆
+- `Memory G3` 仅全局记忆
+- （无可注入记忆则不显示）
+
 ## 安装
 
 ### 方式一：本地开发（推荐，开发期使用）
@@ -68,7 +87,8 @@
 
 ```powershell
 pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
-   -e D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts
+   -e D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts `
+   -e D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts
 ```
 
 ### 方式二：放入全局扩展目录（自动发现）
@@ -76,6 +96,7 @@ pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
 ```powershell
 copy D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts %USERPROFILE%\.pi\agent\extensions\
 copy D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts %USERPROFILE%\.pi\agent\extensions\
+copy D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts %USERPROFILE%\.pi\agent\extensions\
 ```
 
 放置后 pi 启动会自动发现，且支持 `/reload` 热重载。
@@ -123,11 +144,13 @@ pi install git:github.com/<owner>/pi-personal-platform
 2. 启动 pi（任意目录）：
    ```powershell
    pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
-      -e D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts
+      -e D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts `
+      -e D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts
    ```
-3. 观察 TUI 状态行应出现 `📜 Profile G`
-4. 询问亮个人身份相关问题（例如"你的角色是什么"），亮应按 profile.md 内容作答
-5. 测试记忆工具：
+3. 观察 TUI 状态行应出现 `Profile G`
+4. 观察有可见记忆时 TUI 状态行应出现 `Memory ...`
+5. 询问亮个人身份相关问题（例如"你的角色是什么"），亮应按 profile.md 内容作答
+6. 测试记忆工具：
    - 对亮说：`记住：我喜欢先做最小可用版本，再逐步迭代`
    - 期望：亮调用 `remember` 写入，并告知已保存的 category、key、scope
    - 用 PowerShell 查看落盘：`Get-Content $env:USERPROFILE\.pi\memory\store.jsonl`
@@ -150,6 +173,7 @@ pi install git:github.com/<owner>/pi-personal-platform
 - [x] `memory-tool` - `remember(category, key, value)` 写入工具
 - [x] `memory-tool` - `/memory <query>` 本地检索命令
 - [x] `memory-tool` - `/memory list [limit]` 本地盘点命令
+- [x] `auto-memory-injector` - 会话推理前自动注入少量本地记忆摘要
 - [ ] `memory-tool` - 评估是否仍需恢复 `recall(query)` 工具
 - [ ] `decision-log` - 按项目自动记录决策档案
 - [ ] `skills-loader` - 跨项目知识技能库装载

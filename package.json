@@ -14,7 +14,8 @@
   "pi": {
     "extensions": [
       "./extensions/profile-injector.ts",
-      "./extensions/memory-tool.ts"
+      "./extensions/memory-tool.ts",
+      "./extensions/auto-memory-injector.ts"
     ]
   },
   "peerDependencies": {
