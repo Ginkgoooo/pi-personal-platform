@@ -51,6 +51,8 @@
 | `remember` | LLM 工具 | 写入或更新一条记忆；同 `category + key + scope + project` 覆盖旧值 | 已启用 |
 | `/memory <query>` | 斜杠命令 | 只检索当前项目的 project 记忆，并把结果作为用户消息送回模型 | 已启用 |
 | `/memory list [limit]` | 斜杠命令 | 盘点当前项目最近记忆；默认 10 条，最多 30 条，只返回摘要 | 已启用 |
+| `/memory stats` | 斜杠命令 | 统计记忆库规模、当前项目可见数量、global 数量和分类分布 | 已启用 |
+| `/memory doctor` | 斜杠命令 | 诊断 store 文件、坏行、cwd 匹配、重复身份 key、过长 value 等健康状态 | 已启用 |
 | `recall` | LLM 工具 | 原计划按子串检索记忆 | 暂不启用 |
 | `list_memory` | LLM 工具 | 原计划列出记忆元数据；当前由 `/memory list` 替代 | 暂不启用 |
 
@@ -171,6 +173,8 @@ copy D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts %USER
    - 期望：pi 查出当前项目的匹配记忆，并把结果送回模型回答
    - 输入 `/memory list` 验证当前项目记忆盘点
    - 期望：pi 返回当前项目最近 10 条记忆摘要；也可用 `/memory list 30` 指定条数，上限 30
+   - 输入 `/memory stats` 查看记忆库统计
+   - 输入 `/memory doctor` 诊断记忆系统健康状态
 
 ## 手动同步记忆
 
@@ -217,6 +221,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:
 - [x] `memory-tool` - `remember(category, key, value)` 写入工具
 - [x] `memory-tool` - `/memory <query>` 本地检索命令
 - [x] `memory-tool` - `/memory list [limit]` 本地盘点命令
+- [x] `memory-tool` - `/memory stats` 与 `/memory doctor` 本地统计/诊断命令
 - [x] `auto-memory-injector` - 会话推理前自动注入少量本地记忆摘要
 - [x] `memory-backup` - 手动导出/导入本地记忆 zip
 - [ ] `projectId` - 用 Git remote 等稳定项目身份替代单纯 cwd 路径匹配，支持多电脑路径不同场景

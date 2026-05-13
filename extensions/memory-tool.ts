@@ -46,9 +46,17 @@ interface MemoryQueryParams {
 }
 
 interface ParsedMemoryCommand {
-  mode: 'search' | 'list'
+  mode: 'search' | 'list' | 'stats' | 'doctor'
   query: string
   limit: number
+}
+
+interface MemoryDiagnostics {
+  entries: MemoryEntry[]
+  storeExists: boolean
+  badLines: number
+  rawLines: number
+  error?: string
 }
 
 const MEMORY_DIR = join(homedir(), '.pi', 'memory')
@@ -60,27 +68,40 @@ async function ensureMemoryDir(): Promise<void> {
   await mkdir(MEMORY_DIR, { recursive: true })
 }
 
-/** 读取所有记忆；文件不存在时返回空数组 */
-async function loadAll(): Promise<MemoryEntry[]> {
+/** 读取所有记忆，并保留诊断信息 */
+async function loadAllWithDiagnostics(): Promise<MemoryDiagnostics> {
   let raw = ''
   try {
     raw = await readFile(STORE_PATH, 'utf8')
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw err
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { entries: [], storeExists: false, badLines: 0, rawLines: 0 }
+    }
+    return { entries: [], storeExists: false, badLines: 0, rawLines: 0, error: (err as Error).message }
   }
 
   const entries: MemoryEntry[] = []
+  let badLines = 0
+  let rawLines = 0
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
+    rawLines += 1
     try {
       entries.push(JSON.parse(trimmed) as MemoryEntry)
     } catch {
+      badLines += 1
       // 单行损坏时跳过，避免整个记忆库不可用
     }
   }
-  return entries
+  return { entries, storeExists: true, badLines, rawLines }
+}
+
+/** 读取所有记忆；文件不存在时返回空数组 */
+async function loadAll(): Promise<MemoryEntry[]> {
+  const diagnostics = await loadAllWithDiagnostics()
+  if (diagnostics.error) throw new Error(diagnostics.error)
+  return diagnostics.entries
 }
 
 /** 原子化保存全部记忆 */
@@ -196,6 +217,8 @@ async function queryMemory(params: MemoryQueryParams, cwd: string): Promise<Memo
  * 支持两种模式：
  * - `/memory <query>`：按关键词检索当前项目记忆
  * - `/memory list [limit]`：盘点当前项目最近记忆，默认 10 条，最多 30 条
+ * - `/memory stats`：统计当前记忆库规模与分类分布
+ * - `/memory doctor`：诊断 store、cwd、坏行、重复身份等健康状态
  */
 function parseMemoryCommand(args: string): ParsedMemoryCommand {
   const text = args.trim()
@@ -205,6 +228,14 @@ function parseMemoryCommand(args: string): ParsedMemoryCommand {
     const rawLimit = Number(parts[1])
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10
     return { mode: 'list', query: '', limit: Math.min(Math.floor(limit), 30) }
+  }
+
+  if (parts[0] === 'stats') {
+    return { mode: 'stats', query: '', limit: 0 }
+  }
+
+  if (parts[0] === 'doctor') {
+    return { mode: 'doctor', query: '', limit: 0 }
   }
 
   return { mode: 'search', query: text, limit: 10 }
@@ -231,6 +262,94 @@ function formatMemoryListForPrompt(entries: MemoryEntry[]): string {
     .join('\n\n')
 }
 
+function countByCategory(entries: MemoryEntry[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const entry of entries) {
+    counts[entry.category] = (counts[entry.category] || 0) + 1
+  }
+  return counts
+}
+
+function formatCategoryCounts(counts: Record<string, number>): string {
+  const lines = CATEGORY_VALUES.map((category) => `- ${category}: ${counts[category] || 0}`)
+  return lines.join('\n')
+}
+
+function getIdentityKey(entry: MemoryEntry): string {
+  const projectKey = entry.scope === 'project' ? normalizeProjectPath(entry.project) : ''
+  return `${entry.category}\u0000${entry.key}\u0000${entry.scope}\u0000${projectKey}`
+}
+
+function countDuplicateIdentityKeys(entries: MemoryEntry[]): number {
+  const counts = new Map<string, number>()
+  for (const entry of entries) {
+    const key = getIdentityKey(entry)
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return Array.from(counts.values()).filter((count) => count > 1).length
+}
+
+function formatMemoryStats(diagnostics: MemoryDiagnostics, cwd: string): string {
+  const activeEntries = diagnostics.entries.filter((entry) => !entry.deleted)
+  const deletedEntries = diagnostics.entries.filter((entry) => entry.deleted)
+  const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, cwd))
+  const globalEntries = activeEntries.filter((entry) => entry.scope === 'global')
+
+  return [
+    'Memory stats',
+    `store: ${STORE_PATH}`,
+    `cwd: ${cwd}`,
+    `normalized cwd: ${normalizeProjectPath(cwd)}`,
+    '',
+    `store exists: ${diagnostics.storeExists ? 'yes' : 'no'}`,
+    `raw json lines: ${diagnostics.rawLines}`,
+    `active total: ${activeEntries.length}`,
+    `deleted total: ${deletedEntries.length}`,
+    `visible current project: ${visibleProjectEntries.length}`,
+    `global: ${globalEntries.length}`,
+    '',
+    'by category:',
+    formatCategoryCounts(countByCategory(activeEntries)),
+  ].join('\n')
+}
+
+function formatMemoryDoctor(diagnostics: MemoryDiagnostics, cwd: string): string {
+  const activeEntries = diagnostics.entries.filter((entry) => !entry.deleted)
+  const deletedEntries = diagnostics.entries.filter((entry) => entry.deleted)
+  const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, cwd))
+  const globalEntries = activeEntries.filter((entry) => entry.scope === 'global')
+  const duplicateIdentityKeys = countDuplicateIdentityKeys(activeEntries)
+  const longValues = activeEntries.filter((entry) => entry.value.length > 2000).length
+  const issues: string[] = []
+
+  if (!diagnostics.storeExists) issues.push('store file does not exist')
+  if (diagnostics.error) issues.push(`store read error: ${diagnostics.error}`)
+  if (diagnostics.badLines > 0) issues.push(`bad json lines: ${diagnostics.badLines}`)
+  if (duplicateIdentityKeys > 0) issues.push(`duplicate identity keys: ${duplicateIdentityKeys}`)
+  if (longValues > 0) issues.push(`long values > 2000 chars: ${longValues}`)
+
+  return [
+    'Memory doctor',
+    `store path: ${STORE_PATH}`,
+    `store exists: ${diagnostics.storeExists ? 'yes' : 'no'}`,
+    `bad json lines: ${diagnostics.badLines}`,
+    `read error: ${diagnostics.error || 'none'}`,
+    '',
+    `cwd raw: ${cwd}`,
+    `cwd normalized: ${normalizeProjectPath(cwd)}`,
+    '',
+    `active entries: ${activeEntries.length}`,
+    `deleted entries: ${deletedEntries.length}`,
+    `current project entries: ${visibleProjectEntries.length}`,
+    `global entries: ${globalEntries.length}`,
+    `duplicate identity keys: ${duplicateIdentityKeys}`,
+    `long values > 2000 chars: ${longValues}`,
+    '',
+    `status: ${issues.length === 0 ? 'ok' : 'warning'}`,
+    issues.length > 0 ? `issues:\n${issues.map((issue) => `- ${issue}`).join('\n')}` : 'issues: none',
+  ].join('\n')
+}
+
 export default function memoryTool(pi: ExtensionAPI): void {
   // /memory：本地检索命令，不经过 LLM tool schema，且只检索当前项目自己的 project 记忆
   pi.registerCommand('memory', {
@@ -238,6 +357,14 @@ export default function memoryTool(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const command = parseMemoryCommand(args)
       const cwd = ctx.cwd || process.cwd()
+
+      if (command.mode === 'stats' || command.mode === 'doctor') {
+        const diagnostics = await loadAllWithDiagnostics()
+        const body = command.mode === 'stats' ? formatMemoryStats(diagnostics, cwd) : formatMemoryDoctor(diagnostics, cwd)
+        ctx.ui.notify(body, diagnostics.error || diagnostics.badLines > 0 ? 'warning' : 'info')
+        return
+      }
+
       const hits = await queryMemory({ query: command.query, limit: command.limit }, cwd)
 
       if (hits.length === 0) {
