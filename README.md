@@ -81,9 +81,29 @@
 
 ## 安装
 
-### 方式一：本地开发（推荐，开发期使用）
+### 方式一：作为 pi 包安装（推荐，日常使用）
 
-启动 pi 时通过 `-e` 参数加载扩展：
+公开 GitHub 仓库可直接安装为 pi package：
+
+```powershell
+pi install git:github.com/<owner>/pi-personal-platform
+```
+
+以后日常启动只需进入项目目录执行：
+
+```powershell
+pi
+```
+
+更新扩展：
+
+```powershell
+pi update --extensions
+```
+
+### 方式二：本地开发
+
+开发调试时可通过 `-e` 参数临时加载扩展：
 
 ```powershell
 pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
@@ -91,7 +111,7 @@ pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
    -e D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts
 ```
 
-### 方式二：放入全局扩展目录（自动发现）
+### 方式三：放入全局扩展目录（自动发现）
 
 ```powershell
 copy D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts %USERPROFILE%\.pi\agent\extensions\
@@ -100,12 +120,6 @@ copy D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts %USER
 ```
 
 放置后 pi 启动会自动发现，且支持 `/reload` 热重载。
-
-### 方式三：作为 pi 包安装（发布后）
-
-```powershell
-pi install git:github.com/<owner>/pi-personal-platform
-```
 
 ## profile.md 示例模板
 
@@ -141,16 +155,15 @@ pi install git:github.com/<owner>/pi-personal-platform
 ## 验证
 
 1. 创建并填写 `~/.pi/memory/profile.md`
-2. 启动 pi（任意目录）：
+2. 确认已通过 `pi install git:github.com/<owner>/pi-personal-platform` 安装；若在本地开发调试，也可使用上文 `-e` 参数启动
+3. 进入目标项目目录并启动 pi：
    ```powershell
-   pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
-      -e D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts `
-      -e D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts
+   pi
    ```
-3. 观察 TUI 状态行应出现 `Profile G`
-4. 观察有可见记忆时 TUI 状态行应出现 `Memory ...`
-5. 询问亮个人身份相关问题（例如"你的角色是什么"），亮应按 profile.md 内容作答
-6. 测试记忆工具：
+4. 观察 TUI 状态行应出现 `Profile G`
+5. 观察有可见记忆时 TUI 状态行应出现 `Memory ...`
+6. 询问亮个人身份相关问题（例如"你的角色是什么"），亮应按 profile.md 内容作答
+7. 测试记忆工具：
    - 对亮说：`记住：我喜欢先做最小可用版本，再逐步迭代`
    - 期望：亮调用 `remember` 写入，并告知已保存的 category、key、scope
    - 用 PowerShell 查看落盘：`Get-Content $env:USERPROFILE\.pi\memory\store.jsonl`
@@ -191,11 +204,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:
 
 ## 设计原则
 
-- **不越权**：不自动创建文件 / 目录 / 模板，所有持久化由主公主动操作
-- **不缓存**：每次会话启动都重新读 profile.md，修改即时生效
+- **不越权**：扩展运行时不自动创建 profile 模板；持久化写入和同步脚本只在主公明确触发时执行
+- **不缓存**：profile 与 memory 每次会话/推理前重新读取，修改可尽快生效
 - **不阻塞**：读取失败一律静默跳过，绝不影响 pi 启动
-- **不解析**：profile.md 是纯文本，直接注入，不做 frontmatter / 语义分析
-- **不替换**：永远追加到 pi 默认 prompt 之后，不破坏原有结构
+- **不解析 profile**：profile.md 是纯文本，直接注入，不做 frontmatter / 语义分析
+- **不替换 prompt**：永远追加到 pi 默认 prompt 之后，不破坏原有结构
+- **稳定优先**：检索和自动注入优先走本地逻辑，避免恢复不稳定的多 LLM custom tool schema
 
 ## 路线图
 
@@ -204,9 +218,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:
 - [x] `memory-tool` - `/memory <query>` 本地检索命令
 - [x] `memory-tool` - `/memory list [limit]` 本地盘点命令
 - [x] `auto-memory-injector` - 会话推理前自动注入少量本地记忆摘要
-- [ ] `memory-tool` - 评估是否仍需恢复 `recall(query)` 工具
-- [ ] `decision-log` - 按项目自动记录决策档案
+- [x] `memory-backup` - 手动导出/导入本地记忆 zip
+- [ ] `projectId` - 用 Git remote 等稳定项目身份替代单纯 cwd 路径匹配，支持多电脑路径不同场景
+- [ ] `decision-log` - 按项目半自动记录决策档案
 - [ ] `skills-loader` - 跨项目知识技能库装载
+- [ ] `memory-tool` - 评估是否仍需恢复 `recall(query)` 工具
 
 ## License
 
