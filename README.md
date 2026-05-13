@@ -159,6 +159,36 @@ pi install git:github.com/<owner>/pi-personal-platform
    - 输入 `/memory list` 验证当前项目记忆盘点
    - 期望：pi 返回当前项目最近 10 条记忆摘要；也可用 `/memory list 30` 指定条数，上限 30
 
+## 手动同步记忆
+
+当前推荐先用脚本手动打包/恢复本机记忆，采用“以导入包为准”的覆盖式同步。适合公司电脑与家里电脑之间低频同步。
+
+**导出本机记忆：**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\export-memory.ps1 -OutputDir D:\Backup
+```
+
+会生成类似：
+
+```text
+D:\Backup\pi-memory-COMPUTER-20260513-153000.zip
+```
+
+**导入另一台电脑的记忆包：**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:\Backup\pi-memory-COMPUTER-20260513-153000.zip
+```
+
+导入前会自动把本机现有 `profile.md` 和 `store.jsonl` 备份到：
+
+```text
+~/.pi/memory-backups/
+```
+
+注意：导入是覆盖式同步，不做双向合并。哪台电脑记忆最新，就从哪台导出并覆盖另一台。
+
 ## 设计原则
 
 - **不越权**：不自动创建文件 / 目录 / 模板，所有持久化由主公主动操作
