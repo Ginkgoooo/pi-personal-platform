@@ -46,7 +46,7 @@ interface MemoryQueryParams {
 }
 
 interface ParsedMemoryCommand {
-  mode: 'search' | 'list' | 'stats' | 'doctor'
+  mode: 'search' | 'list' | 'stats' | 'doctor' | 'global'
   query: string
   limit: number
 }
@@ -214,10 +214,11 @@ async function queryMemory(params: MemoryQueryParams, cwd: string): Promise<Memo
 /**
  * 解析 /memory 命令参数。
  *
- * 支持两种模式：
+ * 支持的模式：
  * - `/memory <query>`：按关键词检索当前项目记忆
  * - `/memory list [limit]`：盘点当前项目最近记忆，默认 10 条，最多 30 条
- * - `/memory stats`：统计当前记忆库规模与分类分布
+ * - `/memory global [limit]`：盘点全局（scope=global）记忆，默认 10 条，最多 30 条
+ * - `/memory stats`：统计当前记忆库规模与分类分布，并附 global 预览列表
  * - `/memory doctor`：诊断 store、cwd、坏行、重复身份等健康状态
  */
 function parseMemoryCommand(args: string): ParsedMemoryCommand {
@@ -230,6 +231,12 @@ function parseMemoryCommand(args: string): ParsedMemoryCommand {
     return { mode: 'list', query: '', limit: Math.min(Math.floor(limit), 30) }
   }
 
+  if (parts[0] === 'global') {
+    const rawLimit = Number(parts[1])
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10
+    return { mode: 'global', query: '', limit: Math.min(Math.floor(limit), 30) }
+  }
+
   if (parts[0] === 'stats') {
     return { mode: 'stats', query: '', limit: 0 }
   }
@@ -239,6 +246,20 @@ function parseMemoryCommand(args: string): ParsedMemoryCommand {
   }
 
   return { mode: 'search', query: text, limit: 10 }
+}
+
+/**
+ * 列出 scope=global 的记忆，按 updatedAt 倒序，受 limit 限制。
+ * 单独函数；与项目记忆保持隔离，不会受 cwd 影响。
+ */
+async function listGlobalMemory(limit: number): Promise<MemoryEntry[]> {
+  const safeLimit = Math.min(Math.max(limit || 10, 1), 30)
+  const entries = await loadAll()
+  return entries
+    .filter((entry) => !entry.deleted)
+    .filter((entry) => entry.scope === 'global')
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, safeLimit)
 }
 
 /** 格式化 /memory 检索结果，保留 value 全文，方便模型基于记忆回答 */
@@ -295,6 +316,16 @@ function formatMemoryStats(diagnostics: MemoryDiagnostics, cwd: string): string 
   const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, cwd))
   const globalEntries = activeEntries.filter((entry) => entry.scope === 'global')
 
+  // global preview：按 updatedAt 倒序取前 5 条做摘要，方便主公在 stats 里快速扫一眼全局记忆
+  const GLOBAL_PREVIEW_LIMIT = 5
+  const globalPreview = [...globalEntries]
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, GLOBAL_PREVIEW_LIMIT)
+  const globalPreviewBlock =
+    globalPreview.length === 0
+      ? 'global preview: (none)'
+      : `global preview (top ${globalPreview.length}/${globalEntries.length}):\n${formatMemoryListForPrompt(globalPreview)}`
+
   return [
     'Memory stats',
     `store: ${STORE_PATH}`,
@@ -310,6 +341,8 @@ function formatMemoryStats(diagnostics: MemoryDiagnostics, cwd: string): string 
     '',
     'by category:',
     formatCategoryCounts(countByCategory(activeEntries)),
+    '',
+    globalPreviewBlock,
   ].join('\n')
 }
 
@@ -365,10 +398,18 @@ export default function memoryTool(pi: ExtensionAPI): void {
         return
       }
 
-      const hits = await queryMemory({ query: command.query, limit: command.limit }, cwd)
+      const hits =
+        command.mode === 'global'
+          ? await listGlobalMemory(command.limit)
+          : await queryMemory({ query: command.query, limit: command.limit }, cwd)
 
       if (hits.length === 0) {
-        const emptyMessage = command.mode === 'list' ? 'No visible memory found' : `No memory matched: ${command.query}`
+        const emptyMessage =
+          command.mode === 'list'
+            ? 'No visible memory found'
+            : command.mode === 'global'
+              ? 'No global memory found'
+              : `No memory matched: ${command.query}`
         ctx.ui.notify(emptyMessage, 'info')
         return
       }
@@ -376,12 +417,19 @@ export default function memoryTool(pi: ExtensionAPI): void {
       const title =
         command.mode === 'list'
           ? `本地记忆列表（limit=${command.limit}，scope=current-project）`
-          : `本地记忆检索结果（query=${command.query}）`
-      const body = command.mode === 'list' ? formatMemoryListForPrompt(hits) : formatMemoryForPrompt(hits)
+          : command.mode === 'global'
+            ? `全局记忆列表（limit=${command.limit}，scope=global）`
+            : `本地记忆检索结果（query=${command.query}）`
+      const body =
+        command.mode === 'list' || command.mode === 'global'
+          ? formatMemoryListForPrompt(hits)
+          : formatMemoryForPrompt(hits)
       const instruction =
         command.mode === 'list'
           ? '请基于以上本地记忆列表回答主公，说明当前项目有哪些记忆，并引用相关 key 或 id。'
-          : '请基于以上本地记忆回答主公，并引用相关 key 或 id。'
+          : command.mode === 'global'
+            ? '请基于以上全局记忆列表回答主公，说明跨项目共享的记忆有哪些，并引用相关 key 或 id。'
+            : '请基于以上本地记忆回答主公，并引用相关 key 或 id。'
 
       if (!ctx.isIdle()) {
         ctx.ui.notify('Agent is busy. Run /memory after the current response finishes.', 'warning')
