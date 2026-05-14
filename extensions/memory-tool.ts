@@ -10,10 +10,12 @@
  * - 因此将检索能力下沉为本地命令，绕开上游 tool schema 兼容问题。
  */
 
+import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
@@ -28,6 +30,7 @@ interface MemoryEntry {
   value: string
   scope: Scope
   project?: string
+  projectId?: string
   deleted: boolean
   createdAt: string
   updatedAt: string
@@ -59,6 +62,14 @@ interface MemoryDiagnostics {
   error?: string
 }
 
+interface ProjectIdentity {
+  cwd: string
+  normalizedCwd: string
+  projectId?: string
+}
+
+const execFileAsync = promisify(execFile)
+const GIT_REMOTE_TIMEOUT_MS = 1000
 const MEMORY_DIR = join(homedir(), '.pi', 'memory')
 const STORE_PATH = join(MEMORY_DIR, 'store.jsonl')
 const CATEGORY_VALUES = ['decision', 'preference', 'fact', 'note', 'lesson', 'other']
@@ -140,21 +151,67 @@ function normalizeProjectPath(projectPath: string | undefined): string {
   return normalized.replace(/^\/([a-z])\//, '$1:/')
 }
 
+/** 归一化稳定项目身份，用于跨电脑/跨路径匹配同一个 Git 仓库 */
+function normalizeProjectId(projectId: string | undefined): string | undefined {
+  const normalized = (projectId || '').replace(/\\/g, '/').replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase()
+  return normalized || undefined
+}
+
+/** 把常见 Git remote URL 归一化为 host/owner/repo */
+function normalizeGitRemoteUrl(remoteUrl: string): string | undefined {
+  const raw = remoteUrl.trim()
+  if (!raw) return undefined
+
+  const scpLike = raw.match(/^(?:[^@/]+@)?([^:]+):(.+)$/)
+  if (scpLike && !raw.includes('://') && !/^[a-zA-Z]:[\\/]/.test(raw)) {
+    return normalizeProjectId(`${scpLike[1]}/${scpLike[2]}`)
+  }
+
+  try {
+    const url = new URL(raw)
+    if (!url.hostname) return undefined
+    return normalizeProjectId(`${url.hostname}${url.pathname}`)
+  } catch {
+    // 本地路径 remote 没有跨电脑稳定性，暂不作为 projectId
+    return undefined
+  }
+}
+
+/** 解析当前项目身份；Git 不可用或没有 origin 时回退到 cwd 路径 */
+async function resolveProjectIdentity(cwd: string): Promise<ProjectIdentity> {
+  const identity: ProjectIdentity = { cwd, normalizedCwd: normalizeProjectPath(cwd) }
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
+      timeout: GIT_REMOTE_TIMEOUT_MS,
+    })
+    const projectId = normalizeGitRemoteUrl(stdout)
+    if (projectId) identity.projectId = projectId
+  } catch {
+    // 无 git / 非 git 仓库 / 没有 origin 都正常回退 cwd
+  }
+  return identity
+}
+
 /**
- * 判断记忆是否属于当前 cwd。
+ * 判断记忆是否属于当前项目。
  *
- * 当前阶段按主公要求：每个项目只查自己的项目级记忆。
+ * 优先用 projectId 匹配同一个 Git 仓库；旧记忆没有 projectId 时回退 cwd 路径匹配。
  * 即使是 global 记忆，也不在 /memory 中自动返回，避免跨项目串扰。
  */
-function isVisibleMemory(entry: MemoryEntry, cwd: string): boolean {
-  return entry.scope === 'project' && normalizeProjectPath(entry.project) === normalizeProjectPath(cwd)
+function isVisibleMemory(entry: MemoryEntry, identity: ProjectIdentity): boolean {
+  if (entry.scope !== 'project') return false
+  const entryProjectId = normalizeProjectId(entry.projectId)
+  if (identity.projectId && entryProjectId) return entryProjectId === identity.projectId
+  return normalizeProjectPath(entry.project) === identity.normalizedCwd
 }
 
 /** 写入或更新记忆 */
 async function rememberOp(params: RememberParams, cwd: string): Promise<{ id: string; action: 'created' | 'updated' }> {
   const scope = normalizeScope(params.scope)
   const category = normalizeCategory(params.category)
+  const identity = scope === 'project' ? await resolveProjectIdentity(cwd) : undefined
   const project = scope === 'project' ? cwd : undefined
+  const projectId = scope === 'project' ? identity?.projectId : undefined
   const now = nowIso()
 
   return withFileMutationQueue(STORE_PATH, async () => {
@@ -164,12 +221,17 @@ async function rememberOp(params: RememberParams, cwd: string): Promise<{ id: st
       if (entry.category !== category) return false
       if (entry.key !== params.key) return false
       if (entry.scope !== scope) return false
-      return scope === 'global' ? !entry.project : normalizeProjectPath(entry.project) === normalizeProjectPath(project)
+      if (scope === 'global') return !entry.project
+      return identity ? isVisibleMemory(entry, identity) : normalizeProjectPath(entry.project) === normalizeProjectPath(project)
     })
 
     if (index >= 0) {
       entries[index].value = params.value
       entries[index].updatedAt = now
+      if (scope === 'project') {
+        entries[index].project = project
+        if (projectId) entries[index].projectId = projectId
+      }
       await saveAll(entries)
       return { id: entries[index].id, action: 'updated' }
     }
@@ -182,6 +244,7 @@ async function rememberOp(params: RememberParams, cwd: string): Promise<{ id: st
       value: params.value,
       scope,
       project,
+      projectId,
       deleted: false,
       createdAt: now,
       updatedAt: now,
@@ -195,14 +258,14 @@ async function rememberOp(params: RememberParams, cwd: string): Promise<{ id: st
  * 检索记忆，供 /memory 命令使用。
  * 默认只看当前项目自己的 project 记忆，避免跨项目串扰。
  */
-async function queryMemory(params: MemoryQueryParams, cwd: string): Promise<MemoryEntry[]> {
+async function queryMemory(params: MemoryQueryParams, identity: ProjectIdentity): Promise<MemoryEntry[]> {
   const query = params.query.trim().toLowerCase()
   const limit = Math.min(Math.max(params.limit || 10, 1), 30)
   const entries = await loadAll()
 
   return entries
     .filter((entry) => !entry.deleted)
-    .filter((entry) => isVisibleMemory(entry, cwd))
+    .filter((entry) => isVisibleMemory(entry, identity))
     .filter((entry) => {
       if (!query) return true
       return entry.key.toLowerCase().includes(query) || entry.value.toLowerCase().includes(query)
@@ -267,7 +330,8 @@ function formatMemoryForPrompt(entries: MemoryEntry[]): string {
   return entries
     .map((entry, index) => {
       const scopeLabel = entry.scope === 'project' ? `project:${entry.project || '?'}` : 'global'
-      return `[${index + 1}] id=${entry.id}\ncategory=${entry.category}\nkey=${entry.key}\nscope=${scopeLabel}\nupdatedAt=${entry.updatedAt}\nvalue=${entry.value}`
+      const projectIdLine = entry.projectId ? `\nprojectId=${entry.projectId}` : ''
+      return `[${index + 1}] id=${entry.id}\ncategory=${entry.category}\nkey=${entry.key}\nscope=${scopeLabel}${projectIdLine}\nupdatedAt=${entry.updatedAt}\nvalue=${entry.value}`
     })
     .join('\n\n')
 }
@@ -277,8 +341,9 @@ function formatMemoryListForPrompt(entries: MemoryEntry[]): string {
   return entries
     .map((entry, index) => {
       const scopeLabel = entry.scope === 'project' ? `project:${entry.project || '?'}` : 'global'
+      const projectIdLine = entry.projectId ? `\nprojectId=${entry.projectId}` : ''
       const preview = entry.value.length > 80 ? `${entry.value.slice(0, 80)}...` : entry.value
-      return `[${index + 1}] id=${entry.id}\ncategory=${entry.category}\nkey=${entry.key}\nscope=${scopeLabel}\nupdatedAt=${entry.updatedAt}\npreview=${preview}`
+      return `[${index + 1}] id=${entry.id}\ncategory=${entry.category}\nkey=${entry.key}\nscope=${scopeLabel}${projectIdLine}\nupdatedAt=${entry.updatedAt}\npreview=${preview}`
     })
     .join('\n\n')
 }
@@ -297,7 +362,7 @@ function formatCategoryCounts(counts: Record<string, number>): string {
 }
 
 function getIdentityKey(entry: MemoryEntry): string {
-  const projectKey = entry.scope === 'project' ? normalizeProjectPath(entry.project) : ''
+  const projectKey = entry.scope === 'project' ? normalizeProjectId(entry.projectId) || normalizeProjectPath(entry.project) : ''
   return `${entry.category}\u0000${entry.key}\u0000${entry.scope}\u0000${projectKey}`
 }
 
@@ -310,10 +375,37 @@ function countDuplicateIdentityKeys(entries: MemoryEntry[]): number {
   return Array.from(counts.values()).filter((count) => count > 1).length
 }
 
-function formatMemoryStats(diagnostics: MemoryDiagnostics, cwd: string): string {
+/**
+ * 给当前路径可见的旧 project 记忆补 projectId。
+ *
+ * 只补当前 cwd 路径精确匹配且尚未有 projectId 的旧记忆；不改其他路径，避免误判。
+ */
+async function backfillCurrentProjectId(identity: ProjectIdentity): Promise<number> {
+  if (!identity.projectId) return 0
+  return withFileMutationQueue(STORE_PATH, async () => {
+    const entries = await loadAll()
+    let changed = 0
+    for (const entry of entries) {
+      if (entry.deleted || entry.scope !== 'project') continue
+      if (entry.projectId) continue
+      if (normalizeProjectPath(entry.project) !== identity.normalizedCwd) continue
+      entry.projectId = identity.projectId
+      changed += 1
+    }
+    if (changed > 0) await saveAll(entries)
+    return changed
+  })
+}
+
+function formatMemoryStats(diagnostics: MemoryDiagnostics, identity: ProjectIdentity): string {
   const activeEntries = diagnostics.entries.filter((entry) => !entry.deleted)
   const deletedEntries = diagnostics.entries.filter((entry) => entry.deleted)
-  const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, cwd))
+  const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, identity))
+  const projectIdMatchedEntries = identity.projectId
+    ? activeEntries.filter((entry) => normalizeProjectId(entry.projectId) === identity.projectId).length
+    : 0
+  const pathMatchedEntries = activeEntries.filter((entry) => normalizeProjectPath(entry.project) === identity.normalizedCwd).length
+  const projectMissingProjectId = activeEntries.filter((entry) => entry.scope === 'project' && !entry.projectId).length
   const globalEntries = activeEntries.filter((entry) => entry.scope === 'global')
 
   // global preview：按 updatedAt 倒序取前 5 条做摘要，方便主公在 stats 里快速扫一眼全局记忆
@@ -329,14 +421,18 @@ function formatMemoryStats(diagnostics: MemoryDiagnostics, cwd: string): string 
   return [
     'Memory stats',
     `store: ${STORE_PATH}`,
-    `cwd: ${cwd}`,
-    `normalized cwd: ${normalizeProjectPath(cwd)}`,
+    `cwd: ${identity.cwd}`,
+    `normalized cwd: ${identity.normalizedCwd}`,
+    `projectId: ${identity.projectId || '(none)'}`,
     '',
     `store exists: ${diagnostics.storeExists ? 'yes' : 'no'}`,
     `raw json lines: ${diagnostics.rawLines}`,
     `active total: ${activeEntries.length}`,
     `deleted total: ${deletedEntries.length}`,
     `visible current project: ${visibleProjectEntries.length}`,
+    `projectId matched entries: ${projectIdMatchedEntries}`,
+    `path matched entries: ${pathMatchedEntries}`,
+    `project entries missing projectId: ${projectMissingProjectId}`,
     `global: ${globalEntries.length}`,
     '',
     'by category:',
@@ -346,10 +442,15 @@ function formatMemoryStats(diagnostics: MemoryDiagnostics, cwd: string): string 
   ].join('\n')
 }
 
-function formatMemoryDoctor(diagnostics: MemoryDiagnostics, cwd: string): string {
+function formatMemoryDoctor(diagnostics: MemoryDiagnostics, identity: ProjectIdentity): string {
   const activeEntries = diagnostics.entries.filter((entry) => !entry.deleted)
   const deletedEntries = diagnostics.entries.filter((entry) => entry.deleted)
-  const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, cwd))
+  const visibleProjectEntries = activeEntries.filter((entry) => isVisibleMemory(entry, identity))
+  const projectIdMatchedEntries = identity.projectId
+    ? activeEntries.filter((entry) => normalizeProjectId(entry.projectId) === identity.projectId).length
+    : 0
+  const pathMatchedEntries = activeEntries.filter((entry) => normalizeProjectPath(entry.project) === identity.normalizedCwd).length
+  const projectMissingProjectId = activeEntries.filter((entry) => entry.scope === 'project' && !entry.projectId).length
   const globalEntries = activeEntries.filter((entry) => entry.scope === 'global')
   const duplicateIdentityKeys = countDuplicateIdentityKeys(activeEntries)
   const longValues = activeEntries.filter((entry) => entry.value.length > 2000).length
@@ -360,6 +461,7 @@ function formatMemoryDoctor(diagnostics: MemoryDiagnostics, cwd: string): string
   if (diagnostics.badLines > 0) issues.push(`bad json lines: ${diagnostics.badLines}`)
   if (duplicateIdentityKeys > 0) issues.push(`duplicate identity keys: ${duplicateIdentityKeys}`)
   if (longValues > 0) issues.push(`long values > 2000 chars: ${longValues}`)
+  if (projectMissingProjectId > 0) issues.push(`project entries missing projectId: ${projectMissingProjectId}`)
 
   return [
     'Memory doctor',
@@ -368,12 +470,16 @@ function formatMemoryDoctor(diagnostics: MemoryDiagnostics, cwd: string): string
     `bad json lines: ${diagnostics.badLines}`,
     `read error: ${diagnostics.error || 'none'}`,
     '',
-    `cwd raw: ${cwd}`,
-    `cwd normalized: ${normalizeProjectPath(cwd)}`,
+    `cwd raw: ${identity.cwd}`,
+    `cwd normalized: ${identity.normalizedCwd}`,
+    `projectId: ${identity.projectId || '(none)'}`,
     '',
     `active entries: ${activeEntries.length}`,
     `deleted entries: ${deletedEntries.length}`,
     `current project entries: ${visibleProjectEntries.length}`,
+    `projectId matched entries: ${projectIdMatchedEntries}`,
+    `path matched entries: ${pathMatchedEntries}`,
+    `project entries missing projectId: ${projectMissingProjectId}`,
     `global entries: ${globalEntries.length}`,
     `duplicate identity keys: ${duplicateIdentityKeys}`,
     `long values > 2000 chars: ${longValues}`,
@@ -390,10 +496,12 @@ export default function memoryTool(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const command = parseMemoryCommand(args)
       const cwd = ctx.cwd || process.cwd()
+      const identity = await resolveProjectIdentity(cwd)
+      await backfillCurrentProjectId(identity)
 
       if (command.mode === 'stats' || command.mode === 'doctor') {
         const diagnostics = await loadAllWithDiagnostics()
-        const body = command.mode === 'stats' ? formatMemoryStats(diagnostics, cwd) : formatMemoryDoctor(diagnostics, cwd)
+        const body = command.mode === 'stats' ? formatMemoryStats(diagnostics, identity) : formatMemoryDoctor(diagnostics, identity)
         ctx.ui.notify(body, diagnostics.error || diagnostics.badLines > 0 ? 'warning' : 'info')
         return
       }
@@ -401,7 +509,7 @@ export default function memoryTool(pi: ExtensionAPI): void {
       const hits =
         command.mode === 'global'
           ? await listGlobalMemory(command.limit)
-          : await queryMemory({ query: command.query, limit: command.limit }, cwd)
+          : await queryMemory({ query: command.query, limit: command.limit }, identity)
 
       if (hits.length === 0) {
         const emptyMessage =

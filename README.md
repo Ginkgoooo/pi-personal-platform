@@ -48,19 +48,21 @@
 
 | 名称 | 类型 | 用途 | 状态 |
 |------|------|------|------|
-| `remember` | LLM 工具 | 写入或更新一条记忆；同 `category + key + scope + project` 覆盖旧值 | 已启用 |
+| `remember` | LLM 工具 | 写入或更新一条记忆；同 `category + key + scope + projectId/cwd` 覆盖旧值 | 已启用 |
 | `/memory <query>` | 斜杠命令 | 只检索当前项目的 project 记忆，并把结果作为用户消息送回模型 | 已启用 |
 | `/memory list [limit]` | 斜杠命令 | 盘点当前项目最近记忆；默认 10 条，最多 30 条，只返回摘要 | 已启用 |
-| `/memory stats` | 斜杠命令 | 统计记忆库规模、当前项目可见数量、global 数量和分类分布 | 已启用 |
-| `/memory doctor` | 斜杠命令 | 诊断 store 文件、坏行、cwd 匹配、重复身份 key、过长 value 等健康状态 | 已启用 |
+| `/memory stats` | 斜杠命令 | 统计记忆库规模、当前项目可见数量、projectId/path 匹配数量、global 数量和分类分布 | 已启用 |
+| `/memory doctor` | 斜杠命令 | 诊断 store 文件、坏行、projectId/cwd 匹配、重复身份 key、过长 value 等健康状态 | 已启用 |
 | `recall` | LLM 工具 | 原计划按子串检索记忆 | 暂不启用 |
 | `list_memory` | LLM 工具 | 原计划列出记忆元数据；当前由 `/memory list` 替代 | 暂不启用 |
 
 **记忆作用域：**
 
-- `scope="project"`：绑定当前工作目录，适合项目级决策（默认）
+- `scope="project"`：绑定当前项目，适合项目级决策（默认）
 - `scope="global"`：跨项目共享，适合主公个人偏好；当前 `/memory` 不自动检索 global 记忆
-- 当前阶段 `/memory` 只返回当前工作目录绑定的 project 记忆，避免跨项目串扰
+- 当前项目优先用 Git `origin` remote 归一化出的 `projectId` 匹配（例如 `github.com/owner/repo`），支持不同电脑、不同路径共享同一仓库记忆
+- 无 Git remote、Git 不可用或旧记忆没有 `projectId` 时，自动回退到 cwd 路径匹配
+- `/memory` 只返回当前项目的 project 记忆，避免跨项目串扰
 
 ### auto-memory-injector
 
@@ -68,7 +70,7 @@
 
 **注入规则：**
 
-- 当前项目 `scope="project"` 记忆：最多 5 条，按 `updatedAt` 倒序
+- 当前项目 `scope="project"` 记忆：最多 5 条，优先按 `projectId` 匹配，按 `updatedAt` 倒序
 - 全局 `scope="global"` 记忆：最多 3 条，按 `updatedAt` 倒序
 - 只注入摘要 preview，不注入完整正文；需要全文时仍使用 `/memory <query>`
 - 忽略 `deleted=true` 记忆
@@ -224,7 +226,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:
 - [x] `memory-tool` - `/memory stats` 与 `/memory doctor` 本地统计/诊断命令
 - [x] `auto-memory-injector` - 会话推理前自动注入少量本地记忆摘要
 - [x] `memory-backup` - 手动导出/导入本地记忆 zip
-- [ ] `projectId` - 用 Git remote 等稳定项目身份替代单纯 cwd 路径匹配，支持多电脑路径不同场景
+- [x] `projectId` - 用 Git remote 等稳定项目身份替代单纯 cwd 路径匹配，支持多电脑路径不同场景
 - [ ] `decision-log` - 按项目半自动记录决策档案
 - [ ] `skills-loader` - 跨项目知识技能库装载
 - [ ] `memory-tool` - 评估是否仍需恢复 `recall(query)` 工具

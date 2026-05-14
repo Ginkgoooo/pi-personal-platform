@@ -82,7 +82,7 @@ Memory P5+G1 Profile G
 - 手动记忆导出/导入可用；
 - `/memory stats` 与 `/memory doctor` 输出正常。
 
-## 阶段 1：多电脑项目身份 `projectId`
+## 阶段 1：多电脑项目身份 `projectId`（已实现）
 
 ### 背景
 
@@ -139,18 +139,19 @@ github.com/owner/repo
 
 1. 如果当前 cwd 可识别 `projectId`，优先用 `projectId` 匹配；
 2. 如果旧记忆没有 `projectId`，回退到 cwd 路径匹配；
-3. `global` 记忆仍按 global 处理。
+3. `global` 记忆仍按 global 处理；
+4. 运行 `/memory` 时会给当前 cwd 路径精确匹配、但尚未有 `projectId` 的旧 project 记忆做轻量回填。
 
-### 需要改动
+### 已改动
 
 - `extensions/memory-tool.ts`
   - `MemoryEntry` 增加 `projectId?: string`
-  - `rememberOp`
-  - `isVisibleMemory`
-  - `/memory stats`
-  - `/memory doctor`
+  - `rememberOp` 写入/更新时保存 `projectId`
+  - `isVisibleMemory` 优先按 `projectId` 匹配，旧记忆回退 cwd
+  - `/memory stats` 显示 `projectId`、projectId/path 匹配数量和缺失 projectId 数量
+  - `/memory doctor` 显示 `projectId`、projectId/path 匹配数量和缺失 projectId 诊断
 - `extensions/auto-memory-injector.ts`
-  - 当前项目记忆筛选逻辑
+  - 当前项目记忆筛选逻辑优先按 `projectId` 匹配
 
 ### 诊断增强
 
@@ -531,7 +532,7 @@ AGENTS.md
 - [x] /memory doctor
 
 ### M2 多设备稳定化
-- [ ] projectId
+- [x] projectId
 - [ ] /memory show <id>
 - [ ] /memory delete <id>
 - [ ] /memory restore <id>
