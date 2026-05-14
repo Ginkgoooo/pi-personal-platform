@@ -176,13 +176,13 @@ path matched entries: 10
 - 旧路径记忆仍可见；
 - `/memory doctor` 能显示 `projectId` 与匹配数量。
 
-## 阶段 2：记忆治理与安全维护
+## 阶段 2：记忆治理与安全维护（已实现基础版）
 
 ### 目标
 
 让记忆库可维护、可清理、可备份、可诊断。
 
-### 功能规划
+### 已实现功能
 
 #### `/memory show <id>`
 
@@ -210,7 +210,7 @@ path matched entries: 10
 /memory restore mem_xxx
 ```
 
-#### `/memory list <category>`
+#### `/memory list <category> [limit]`
 
 按分类过滤当前项目记忆。
 
@@ -218,6 +218,7 @@ path matched entries: 10
 /memory list decision
 /memory list note
 /memory list preference
+/memory list decision 20
 ```
 
 #### 记忆更新提醒
@@ -225,7 +226,7 @@ path matched entries: 10
 `remember` 写入成功后提示：
 
 ```text
-Memory updated. Remember to export memory if you switch computers.
+Remember to export memory if you switch computers.
 ```
 
 暂不自动同步。
@@ -486,23 +487,18 @@ AGENTS.md
 
 ## 近期执行顺序
 
-### 最近 1 天
+### 已完成
 
-1. 提交 `/memory stats` 与 `/memory doctor`；
-2. 提交 README 更新；
-3. 两台电脑更新 GitHub 包验证。
+1. `/memory stats` 与 `/memory doctor`；
+2. `projectId` 跨电脑/跨路径项目身份；
+3. `/memory show/delete/restore`；
+4. `/memory list <category> [limit]`。
 
-### 最近 1 周
+### 下一步
 
-1. 做 `projectId`；
-2. 更新 `/memory doctor` 显示 `projectId`；
-3. 验证两台电脑不同路径仍能识别项目记忆。
-
-### 最近 2 周
-
-1. 做 `/memory show/delete/restore`；
-2. 做 `/memory list <category>`；
-3. 做 `/decision`。
+1. 做 `/decision`；
+2. 验证两台电脑不同路径仍能识别项目记忆；
+3. 继续完善记忆治理体验。
 
 ### 最近 1 个月
 
@@ -533,10 +529,10 @@ AGENTS.md
 
 ### M2 多设备稳定化
 - [x] projectId
-- [ ] /memory show <id>
-- [ ] /memory delete <id>
-- [ ] /memory restore <id>
-- [ ] /memory list <category>
+- [x] /memory show <id>
+- [x] /memory delete <id>
+- [x] /memory restore <id>
+- [x] /memory list <category>
 
 ### M3 决策沉淀
 - [ ] /decision <content>

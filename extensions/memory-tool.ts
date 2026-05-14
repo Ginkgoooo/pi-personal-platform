@@ -49,9 +49,11 @@ interface MemoryQueryParams {
 }
 
 interface ParsedMemoryCommand {
-  mode: 'search' | 'list' | 'stats' | 'doctor' | 'global'
+  mode: 'search' | 'list' | 'stats' | 'doctor' | 'global' | 'show' | 'delete' | 'restore'
   query: string
   limit: number
+  category?: Category
+  id?: string
 }
 
 interface MemoryDiagnostics {
@@ -138,6 +140,10 @@ function normalizeCategory(category: unknown): Category {
 
 function normalizeScope(scope: unknown): Scope {
   return scope === 'global' ? 'global' : 'project'
+}
+
+function isCategory(value: string | undefined): value is Category {
+  return typeof value === 'string' && CATEGORY_VALUES.includes(value)
 }
 
 /**
@@ -258,7 +264,7 @@ async function rememberOp(params: RememberParams, cwd: string): Promise<{ id: st
  * 检索记忆，供 /memory 命令使用。
  * 默认只看当前项目自己的 project 记忆，避免跨项目串扰。
  */
-async function queryMemory(params: MemoryQueryParams, identity: ProjectIdentity): Promise<MemoryEntry[]> {
+async function queryMemory(params: MemoryQueryParams & { category?: Category }, identity: ProjectIdentity): Promise<MemoryEntry[]> {
   const query = params.query.trim().toLowerCase()
   const limit = Math.min(Math.max(params.limit || 10, 1), 30)
   const entries = await loadAll()
@@ -266,6 +272,7 @@ async function queryMemory(params: MemoryQueryParams, identity: ProjectIdentity)
   return entries
     .filter((entry) => !entry.deleted)
     .filter((entry) => isVisibleMemory(entry, identity))
+    .filter((entry) => (params.category ? entry.category === params.category : true))
     .filter((entry) => {
       if (!query) return true
       return entry.key.toLowerCase().includes(query) || entry.value.toLowerCase().includes(query)
@@ -279,8 +286,11 @@ async function queryMemory(params: MemoryQueryParams, identity: ProjectIdentity)
  *
  * 支持的模式：
  * - `/memory <query>`：按关键词检索当前项目记忆
- * - `/memory list [limit]`：盘点当前项目最近记忆，默认 10 条，最多 30 条
+ * - `/memory list [category] [limit]`：盘点当前项目最近记忆，可按分类过滤，默认 10 条，最多 30 条
  * - `/memory global [limit]`：盘点全局（scope=global）记忆，默认 10 条，最多 30 条
+ * - `/memory show <id>`：显示单条可见记忆全文，包括已软删除记忆
+ * - `/memory delete <id>`：软删除单条可见记忆
+ * - `/memory restore <id>`：恢复单条可见软删除记忆
  * - `/memory stats`：统计当前记忆库规模与分类分布，并附 global 预览列表
  * - `/memory doctor`：诊断 store、cwd、坏行、重复身份等健康状态
  */
@@ -289,15 +299,28 @@ function parseMemoryCommand(args: string): ParsedMemoryCommand {
   const parts = text.split(/\s+/).filter(Boolean)
 
   if (parts[0] === 'list') {
-    const rawLimit = Number(parts[1])
+    const category = isCategory(parts[1]) ? parts[1] : undefined
+    const rawLimit = Number(category ? parts[2] : parts[1])
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10
-    return { mode: 'list', query: '', limit: Math.min(Math.floor(limit), 30) }
+    return { mode: 'list', query: '', limit: Math.min(Math.floor(limit), 30), category }
   }
 
   if (parts[0] === 'global') {
     const rawLimit = Number(parts[1])
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 10
     return { mode: 'global', query: '', limit: Math.min(Math.floor(limit), 30) }
+  }
+
+  if (parts[0] === 'show') {
+    return { mode: 'show', query: '', limit: 0, id: parts[1] }
+  }
+
+  if (parts[0] === 'delete') {
+    return { mode: 'delete', query: '', limit: 0, id: parts[1] }
+  }
+
+  if (parts[0] === 'restore') {
+    return { mode: 'restore', query: '', limit: 0, id: parts[1] }
   }
 
   if (parts[0] === 'stats') {
@@ -323,6 +346,56 @@ async function listGlobalMemory(limit: number): Promise<MemoryEntry[]> {
     .filter((entry) => entry.scope === 'global')
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, safeLimit)
+}
+
+function canManageMemory(entry: MemoryEntry, identity: ProjectIdentity): boolean {
+  if (entry.scope === 'global') return true
+  return isVisibleMemory(entry, identity)
+}
+
+async function findMemoryById(id: string, identity: ProjectIdentity): Promise<MemoryEntry | undefined> {
+  const entries = await loadAll()
+  return entries.find((entry) => entry.id === id && canManageMemory(entry, identity))
+}
+
+async function setMemoryDeleted(
+  id: string,
+  deleted: boolean,
+  identity: ProjectIdentity,
+): Promise<{ entry?: MemoryEntry; action: 'deleted' | 'restored' | 'unchanged' | 'not-found' }> {
+  return withFileMutationQueue(STORE_PATH, async () => {
+    const entries = await loadAll()
+    const index = entries.findIndex((entry) => entry.id === id && canManageMemory(entry, identity))
+    if (index < 0) return { action: 'not-found' }
+
+    const entry = entries[index]
+    if (entry.deleted === deleted) {
+      return { entry, action: 'unchanged' }
+    }
+
+    entry.deleted = deleted
+    entry.updatedAt = nowIso()
+    await saveAll(entries)
+    return { entry, action: deleted ? 'deleted' : 'restored' }
+  })
+}
+
+function formatSingleMemory(entry: MemoryEntry): string {
+  const scopeLabel = entry.scope === 'project' ? `project:${entry.project || '?'}` : 'global'
+  return [
+    'Memory entry',
+    `id: ${entry.id}`,
+    `category: ${entry.category}`,
+    `key: ${entry.key}`,
+    `scope: ${scopeLabel}`,
+    `projectId: ${entry.projectId || '(none)'}`,
+    `deleted: ${entry.deleted ? 'yes' : 'no'}`,
+    `createdAt: ${entry.createdAt}`,
+    `updatedAt: ${entry.updatedAt}`,
+    '',
+    'value:',
+    entry.value,
+  ].join('\n')
 }
 
 /** 格式化 /memory 检索结果，保留 value 全文，方便模型基于记忆回答 */
@@ -506,15 +579,41 @@ export default function memoryTool(pi: ExtensionAPI): void {
         return
       }
 
+      if (command.mode === 'show') {
+        if (!command.id) {
+          ctx.ui.notify('Usage: /memory show <id>', 'warning')
+          return
+        }
+        const entry = await findMemoryById(command.id, identity)
+        ctx.ui.notify(entry ? formatSingleMemory(entry) : `No manageable memory found: ${command.id}`, entry ? 'info' : 'warning')
+        return
+      }
+
+      if (command.mode === 'delete' || command.mode === 'restore') {
+        if (!command.id) {
+          ctx.ui.notify(`Usage: /memory ${command.mode} <id>`, 'warning')
+          return
+        }
+        const result = await setMemoryDeleted(command.id, command.mode === 'delete', identity)
+        if (result.action === 'not-found') {
+          ctx.ui.notify(`No manageable memory found: ${command.id}`, 'warning')
+          return
+        }
+        const verb = command.mode === 'delete' ? 'delete' : 'restore'
+        const status = result.action === 'unchanged' ? `${verb} unchanged` : result.action
+        ctx.ui.notify(`Memory ${status}: id=${command.id}, key=${result.entry?.key || '?'}`, 'info')
+        return
+      }
+
       const hits =
         command.mode === 'global'
           ? await listGlobalMemory(command.limit)
-          : await queryMemory({ query: command.query, limit: command.limit }, identity)
+          : await queryMemory({ query: command.query, limit: command.limit, category: command.category }, identity)
 
       if (hits.length === 0) {
         const emptyMessage =
           command.mode === 'list'
-            ? 'No visible memory found'
+            ? `No visible memory found${command.category ? ` for category=${command.category}` : ''}`
             : command.mode === 'global'
               ? 'No global memory found'
               : `No memory matched: ${command.query}`
@@ -524,7 +623,7 @@ export default function memoryTool(pi: ExtensionAPI): void {
 
       const title =
         command.mode === 'list'
-          ? `本地记忆列表（limit=${command.limit}，scope=current-project）`
+          ? `本地记忆列表（limit=${command.limit}，scope=current-project${command.category ? `，category=${command.category}` : ''}）`
           : command.mode === 'global'
             ? `全局记忆列表（limit=${command.limit}，scope=global）`
             : `本地记忆检索结果（query=${command.query}）`
@@ -581,7 +680,7 @@ export default function memoryTool(pi: ExtensionAPI): void {
         content: [
           {
             type: 'text',
-            text: `Memory ${result.action}: category=${category}, key=${raw.key}, scope=${scope}, id=${result.id}`,
+            text: `Memory ${result.action}: category=${category}, key=${raw.key}, scope=${scope}, id=${result.id}\nRemember to export memory if you switch computers.`,
           },
         ],
         details: result,
