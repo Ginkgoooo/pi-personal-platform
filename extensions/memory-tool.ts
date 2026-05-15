@@ -134,6 +134,15 @@ function generateId(): string {
   return `mem_${Date.now()}_${randomBytes(3).toString('hex')}`
 }
 
+function compactTimestamp(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+}
+
+function generateDecisionKey(): string {
+  return `decision-${compactTimestamp()}-${randomBytes(2).toString('hex')}`
+}
+
 function normalizeCategory(category: unknown): Category {
   return typeof category === 'string' && CATEGORY_VALUES.includes(category) ? (category as Category) : 'other'
 }
@@ -645,6 +654,56 @@ export default function memoryTool(pi: ExtensionAPI): void {
 
       // 把检索/盘点结果作为用户消息送回模型，由模型基于当前项目记忆继续回答主公
       pi.sendUserMessage(`${title}\n\n${body}\n\n${instruction}`)
+    },
+  })
+
+  // /decision：半自动记录项目决策；必须由主公显式输入，不做全自动沉淀
+  pi.registerCommand('decision', {
+    description: 'Record or list project decisions in local memory',
+    handler: async (args, ctx) => {
+      const text = args.trim()
+      const parts = text.split(/\s+/).filter(Boolean)
+      const cwd = ctx.cwd || process.cwd()
+      const identity = await resolveProjectIdentity(cwd)
+      await backfillCurrentProjectId(identity)
+
+      if (!text) {
+        ctx.ui.notify('Usage: /decision <content> | /decision list [limit] | /decision show <id>', 'warning')
+        return
+      }
+
+      if (parts[0] === 'list') {
+        const rawLimit = Number(parts[1])
+        const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 30) : 10
+        const decisions = await queryMemory({ query: '', limit, category: 'decision' }, identity)
+        ctx.ui.notify(
+          decisions.length > 0 ? formatMemoryListForPrompt(decisions) : 'No visible project decisions found',
+          'info',
+        )
+        return
+      }
+
+      if (parts[0] === 'show') {
+        const id = parts[1]
+        if (!id) {
+          ctx.ui.notify('Usage: /decision show <id>', 'warning')
+          return
+        }
+        const entry = await findMemoryById(id, identity)
+        if (!entry || entry.category !== 'decision' || entry.scope !== 'project') {
+          ctx.ui.notify(`No manageable project decision found: ${id}`, 'warning')
+          return
+        }
+        ctx.ui.notify(formatSingleMemory(entry), 'info')
+        return
+      }
+
+      const key = generateDecisionKey()
+      const result = await rememberOp({ category: 'decision', key, value: text, scope: 'project' }, cwd)
+      ctx.ui.notify(
+        `Decision ${result.action}: key=${key}, id=${result.id}\nUse /memory list decision or /decision list to review.\nRemember to export memory if you switch computers.`,
+        'info',
+      )
     },
   })
 

@@ -239,13 +239,13 @@ Remember to export memory if you switch computers.
 - 分类可过滤；
 - 记忆更新后有同步提醒。
 
-## 阶段 3：决策沉淀 `decision-log`
+## 阶段 3：决策沉淀 `decision-log`（已实现基础版）
 
 ### 目标
 
 让重要项目决策不再完全依赖“记住：xxx”。第一版必须半自动，不做全自动。
 
-### 第一版命令
+### 已实现命令
 
 ```text
 /decision <内容>
@@ -263,7 +263,7 @@ Remember to export memory if you switch computers.
 {
   "category": "decision",
   "scope": "project",
-  "key": "decision-20260513-xxxx",
+  "key": "decision-YYYYMMDD-HHMMSS-xxxx",
   "value": "当前阶段不做自动 memory-sync，只保留手动 zip 覆盖同步"
 }
 ```
@@ -271,7 +271,7 @@ Remember to export memory if you switch computers.
 ### 辅助命令
 
 ```text
-/decision list
+/decision list [limit]
 /decision show <id>
 ```
 
@@ -492,12 +492,13 @@ AGENTS.md
 1. `/memory stats` 与 `/memory doctor`；
 2. `projectId` 跨电脑/跨路径项目身份；
 3. `/memory show/delete/restore`；
-4. `/memory list <category> [limit]`。
+4. `/memory list <category> [limit]`；
+5. `/decision <content>`、`/decision list [limit]`、`/decision show <id>`。
 
 ### 下一步
 
-1. 做 `/decision`；
-2. 验证两台电脑不同路径仍能识别项目记忆；
+1. 验证两台电脑不同路径仍能识别项目记忆；
+2. 做 `/resume-project`；
 3. 继续完善记忆治理体验。
 
 ### 最近 1 个月
@@ -535,8 +536,9 @@ AGENTS.md
 - [x] /memory list <category>
 
 ### M3 决策沉淀
-- [ ] /decision <content>
-- [ ] /decision list
+- [x] /decision <content>
+- [x] /decision list
+- [x] /decision show <id>
 - [ ] decision auto-suggest only
 
 ### M4 项目恢复与交接

@@ -54,6 +54,9 @@
 | `/memory show <id>` | 斜杠命令 | 显示单条可管理记忆全文，包括 deleted 状态 | 已启用 |
 | `/memory delete <id>` | 斜杠命令 | 软删除单条可管理记忆，不物理删除 | 已启用 |
 | `/memory restore <id>` | 斜杠命令 | 恢复单条已软删除记忆 | 已启用 |
+| `/decision <content>` | 斜杠命令 | 半自动记录当前项目决策，写入 `category=decision` 的 project 记忆 | 已启用 |
+| `/decision list [limit]` | 斜杠命令 | 查看当前项目最近决策 | 已启用 |
+| `/decision show <id>` | 斜杠命令 | 查看单条项目决策全文 | 已启用 |
 | `/memory stats` | 斜杠命令 | 统计记忆库规模、当前项目可见数量、projectId/path 匹配数量、global 数量和分类分布 | 已启用 |
 | `/memory doctor` | 斜杠命令 | 诊断 store 文件、坏行、projectId/cwd 匹配、重复身份 key、过长 value 等健康状态 | 已启用 |
 | `recall` | LLM 工具 | 原计划按子串检索记忆 | 暂不启用 |
@@ -181,6 +184,8 @@ copy D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts %USER
    - 输入 `/memory list preference` 或 `/memory list decision 20` 验证按分类过滤
    - 从列表复制一个 id，输入 `/memory show <id>` 查看单条完整记忆
    - 输入 `/memory delete <id>` 验证软删除，再输入 `/memory restore <id>` 恢复
+   - 输入 `/decision 当前阶段先手动验证 projectId，再继续做 workflow-lite` 验证半自动决策记录
+   - 输入 `/decision list` 或 `/memory list decision` 验证决策可查询
    - 输入 `/memory stats` 查看记忆库统计
    - 输入 `/memory doctor` 诊断记忆系统健康状态
 
@@ -234,7 +239,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:
 - [x] `auto-memory-injector` - 会话推理前自动注入少量本地记忆摘要
 - [x] `memory-backup` - 手动导出/导入本地记忆 zip
 - [x] `projectId` - 用 Git remote 等稳定项目身份替代单纯 cwd 路径匹配，支持多电脑路径不同场景
-- [ ] `decision-log` - 按项目半自动记录决策档案
+- [x] `decision-log` - 按项目半自动记录决策档案
 - [ ] `skills-loader` - 跨项目知识技能库装载
 - [ ] `memory-tool` - 评估是否仍需恢复 `recall(query)` 工具
 
