@@ -11,9 +11,11 @@
  * - 读取失败、单行损坏、无可见记忆时均静默跳过，不阻塞会话
  */
 
+import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 type Category = 'decision' | 'preference' | 'fact' | 'note' | 'lesson' | 'other'
@@ -26,11 +28,20 @@ interface MemoryEntry {
   value: string
   scope: Scope
   project?: string
+  projectId?: string
   deleted: boolean
   createdAt: string
   updatedAt: string
 }
 
+interface ProjectIdentity {
+  cwd: string
+  normalizedCwd: string
+  projectId?: string
+}
+
+const execFileAsync = promisify(execFile)
+const GIT_REMOTE_TIMEOUT_MS = 1000
 const STORE_PATH = join(homedir(), '.pi', 'memory', 'store.jsonl')
 const STATUS_KEY = 'auto-memory'
 const PROJECT_MEMORY_LIMIT = 5
@@ -65,9 +76,52 @@ function normalizeProjectPath(projectPath: string | undefined): string {
   return normalized.replace(/^\/([a-z])\//, '$1:/')
 }
 
-/** 判断记忆是否属于当前 cwd */
-function isCurrentProjectMemory(entry: MemoryEntry, cwd: string): boolean {
-  return entry.scope === 'project' && normalizeProjectPath(entry.project) === normalizeProjectPath(cwd)
+/** 归一化稳定项目身份，用于跨电脑/跨路径匹配同一个 Git 仓库 */
+function normalizeProjectId(projectId: string | undefined): string | undefined {
+  const normalized = (projectId || '').replace(/\\/g, '/').replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase()
+  return normalized || undefined
+}
+
+/** 把常见 Git remote URL 归一化为 host/owner/repo */
+function normalizeGitRemoteUrl(remoteUrl: string): string | undefined {
+  const raw = remoteUrl.trim()
+  if (!raw) return undefined
+
+  const scpLike = raw.match(/^(?:[^@/]+@)?([^:]+):(.+)$/)
+  if (scpLike && !raw.includes('://') && !/^[a-zA-Z]:[\\/]/.test(raw)) {
+    return normalizeProjectId(`${scpLike[1]}/${scpLike[2]}`)
+  }
+
+  try {
+    const url = new URL(raw)
+    if (!url.hostname) return undefined
+    return normalizeProjectId(`${url.hostname}${url.pathname}`)
+  } catch {
+    return undefined
+  }
+}
+
+/** 解析当前项目身份；Git 不可用或没有 origin 时回退到 cwd 路径 */
+async function resolveProjectIdentity(cwd: string): Promise<ProjectIdentity> {
+  const identity: ProjectIdentity = { cwd, normalizedCwd: normalizeProjectPath(cwd) }
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
+      timeout: GIT_REMOTE_TIMEOUT_MS,
+    })
+    const projectId = normalizeGitRemoteUrl(stdout)
+    if (projectId) identity.projectId = projectId
+  } catch {
+    // 无 git / 非 git 仓库 / 没有 origin 都正常回退 cwd
+  }
+  return identity
+}
+
+/** 判断记忆是否属于当前项目 */
+function isCurrentProjectMemory(entry: MemoryEntry, identity: ProjectIdentity): boolean {
+  if (entry.scope !== 'project') return false
+  const entryProjectId = normalizeProjectId(entry.projectId)
+  if (identity.projectId && entryProjectId) return entryProjectId === identity.projectId
+  return normalizeProjectPath(entry.project) === identity.normalizedCwd
 }
 
 function preview(value: string): string {
@@ -79,9 +133,9 @@ function sortByUpdatedAtDesc(entries: MemoryEntry[]): MemoryEntry[] {
   return [...entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 }
 
-function selectMemories(entries: MemoryEntry[], cwd: string): { projectMemories: MemoryEntry[]; globalMemories: MemoryEntry[] } {
+function selectMemories(entries: MemoryEntry[], identity: ProjectIdentity): { projectMemories: MemoryEntry[]; globalMemories: MemoryEntry[] } {
   const activeEntries = entries.filter((entry) => !entry.deleted)
-  const projectMemories = sortByUpdatedAtDesc(activeEntries.filter((entry) => isCurrentProjectMemory(entry, cwd))).slice(
+  const projectMemories = sortByUpdatedAtDesc(activeEntries.filter((entry) => isCurrentProjectMemory(entry, identity))).slice(
     0,
     PROJECT_MEMORY_LIMIT,
   )
@@ -137,7 +191,8 @@ function safeSetStatus(ctx: { ui?: { setStatus?: (key: string, value: string | u
 
 async function refreshMemoryStatus(ctx: { cwd?: string; ui?: { setStatus?: (key: string, value: string | undefined) => void } }): Promise<void> {
   const entries = await loadAll()
-  const { projectMemories, globalMemories } = selectMemories(entries, ctx.cwd || process.cwd())
+  const identity = await resolveProjectIdentity(ctx.cwd || process.cwd())
+  const { projectMemories, globalMemories } = selectMemories(entries, identity)
   safeSetStatus(ctx, buildStatusLabel(projectMemories.length, globalMemories.length))
 }
 
@@ -151,7 +206,8 @@ export default function autoMemoryInjector(pi: ExtensionAPI): void {
     const opts = event.systemPromptOptions
     const cwd = opts && opts.cwd ? opts.cwd : ctx.cwd || process.cwd()
     const entries = await loadAll()
-    const { projectMemories, globalMemories } = selectMemories(entries, cwd)
+    const identity = await resolveProjectIdentity(cwd)
+    const { projectMemories, globalMemories } = selectMemories(entries, identity)
     const appendSection = wrapAsAppendSection(projectMemories, globalMemories)
 
     safeSetStatus(ctx, buildStatusLabel(projectMemories.length, globalMemories.length))
