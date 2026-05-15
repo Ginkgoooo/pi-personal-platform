@@ -158,11 +158,15 @@ export default function profileInjector(pi: ExtensionAPI): void {
 			return;
 		}
 
+		// 移除 pi 默认注入的 "Be concise" 指令，避免与 profile 中的沟通风格规则冲突
+		let prompt = event.systemPrompt;
+		prompt = prompt.replace(/^- Be concise in your responses\n?/m, "");
+
 		// 在原 system prompt 末尾追加 profile 段
-		// 注意：必须返回 event.systemPrompt + 追加内容，而非替换原 prompt，
+		// 注意：必须返回修改后的 prompt + 追加内容，而非替换原 prompt，
 		// 否则会丢失 pi 默认 prompt 和先前 handler 的链式修改
 		return {
-			systemPrompt: event.systemPrompt + wrapAsAppendSection(merged),
+			systemPrompt: prompt + wrapAsAppendSection(merged),
 		};
 	});
 
