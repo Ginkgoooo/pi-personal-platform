@@ -70,6 +70,52 @@
 - 无 Git remote、Git 不可用或旧记忆没有 `projectId` 时，自动回退到 cwd 路径匹配
 - `/memory` 只返回当前项目的 project 记忆，避免跨项目串扰
 
+### handoff
+
+下班或切换电脑前的交接命令，跟 `/resume-project` 互为对仁。关心「今天我留下了什么、明天/另一台电脑接手要怎么继续」。
+
+**命令：** `/handoff`
+
+**输出内容：**
+
+- cwd 与 `projectId`
+- Git：当前分支、当天本地 00:00 起当前分支上的 commit、未提交改动 status（最多 30 行）、工作树 vs HEAD 的 numstat 摘要（几个文件 +X / -Y 行）
+- 当前项目最近 3 条 `decision` 记忆
+- 当前项目最近 3 条 `note` 记忆
+- 记忆导出脱本提醒（不自动执行）
+
+报告会先以 `info` 通知在 TUI 展示，再作为用户消息送回模型，让它输出「今日完成 + 未提交/待续 + 下次接手建议」三段式交接说明。
+
+**设计重点：**
+
+- 不自动 commit/push，不自动导出记忆；是否提交 / 是否运行 `scripts/export-memory.ps1` 都由主公决定
+- Git 子项各自独立 try-catch；今日无 commit 会明说为 `(no commits today on current branch)`，避免凭空推断
+- 项目身份解析与 `auto-memory-injector` / `resume-project` 一致，优先 `projectId`，回退 cwd
+- 模型忙碌（非 idle）时拒绝执行
+
+### resume-project
+
+开工时一条命令收齐当前项目的状态快照，让模型基于「我现在在哪、最近干了什么、记忆和决策提示什么」给出下一步建议。
+
+**命令：** `/resume-project`
+
+**输出内容：**
+
+- cwd 与 `projectId`（无 Git remote 时仅显示 cwd）
+- Git：当前分支、`git status --porcelain`（最多 30 行，超出会截断）、最近 5 条 commit
+- 当前项目最近 5 条记忆（任意分类，按 `updatedAt` 倒序）
+- 当前项目最近 3 条 `decision` 记忆
+- 当前项目最近 3 条 `note` 记忆
+
+报告会同步以 `info` 通知展示在 TUI，并作为用户消息送回模型，让它输出「4-6 行状态总结 + 2-3 条下一步建议」。
+
+**稳定性：**
+
+- 纯只读：不写入任何文件、不修改任何记忆
+- Git 子项各自独立 try-catch；任一失败仍尽量给出其他可用部分
+- 模型忙碌（非 idle）时拒绝执行并给出提示，避免破坏当前流式回复
+- 项目身份解析与 `auto-memory-injector` 一致，优先用 Git remote 归一化出的 `projectId`，回退到 cwd 路径
+
 ### auto-memory-injector
 
 会话中每次 agent 开始推理前，自动读取 `~/.pi/memory/store.jsonl`，把少量本地记忆摘要追加到 system prompt，减少手动 `/memory list` 的次数。
@@ -118,7 +164,9 @@ pi update --extensions
 ```powershell
 pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
    -e D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts `
-   -e D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts
+   -e D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts `
+   -e D:\My_work\pi\pi-personal-platform\extensions\resume-project.ts `
+   -e D:\My_work\pi\pi-personal-platform\extensions\handoff.ts
 ```
 
 ### 方式三：放入全局扩展目录（自动发现）
@@ -127,6 +175,8 @@ pi -e D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts `
 copy D:\My_work\pi\pi-personal-platform\extensions\profile-injector.ts %USERPROFILE%\.pi\agent\extensions\
 copy D:\My_work\pi\pi-personal-platform\extensions\memory-tool.ts %USERPROFILE%\.pi\agent\extensions\
 copy D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts %USERPROFILE%\.pi\agent\extensions\
+copy D:\My_work\pi\pi-personal-platform\extensions\resume-project.ts %USERPROFILE%\.pi\agent\extensions\
+copy D:\My_work\pi\pi-personal-platform\extensions\handoff.ts %USERPROFILE%\.pi\agent\extensions\
 ```
 
 放置后 pi 启动会自动发现，且支持 `/reload` 热重载。
@@ -188,6 +238,16 @@ copy D:\My_work\pi\pi-personal-platform\extensions\auto-memory-injector.ts %USER
    - 输入 `/decision list` 或 `/memory list decision` 验证决策可查询
    - 输入 `/memory stats` 查看记忆库统计
    - 输入 `/memory doctor` 诊断记忆系统健康状态
+8. 测试项目恢复命令：
+   - 输入 `/resume-project`
+   - 期望：先在 TUI 看到一份包含 cwd / projectId / Git 分支与状态 / 最近 commit / 最近记忆 / 最近 decision / 最近 note 的快照通知
+   - 紧接着模型基于该快照输出 4-6 行状态总结和 2-3 条下一步建议
+   - 在非 Git 仓库目录中运行该命令也应正常返回（Git 段会显示「not a git repository or git unavailable」）
+9. 测试交接命令：
+   - 输入 `/handoff`
+   - 期望：先在 TUI 看到 cwd / projectId / Git 分支 / 今日 commit / 未提交 status / numstat 摘要 / 记忆摘要 / 记忆导出提醒的快照通知
+   - 紧接着模型输出「今日完成 / 未提交待续 / 下次接手建议」三段
+   - 今天未提交 commit 时，模型应明说「今日无 commit」，不凭空记任何完成事项
 
 ## 手动同步记忆
 
@@ -240,6 +300,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\import-memory.ps1 -ZipPath D:
 - [x] `memory-backup` - 手动导出/导入本地记忆 zip
 - [x] `projectId` - 用 Git remote 等稳定项目身份替代单纯 cwd 路径匹配，支持多电脑路径不同场景
 - [x] `decision-log` - 按项目半自动记录决策档案
+- [x] `resume-project` - 开工时收齐 cwd / git / 记忆 / 决策快照并请求模型给下一步建议
+- [x] `handoff` - 下班/切换电脑前生成交接摘要（今日 commit + 未提交 + 记忆导出提醒）
 - [ ] `skills-loader` - 跨项目知识技能库装载
 - [ ] `memory-tool` - 评估是否仍需恢复 `recall(query)` 工具
 

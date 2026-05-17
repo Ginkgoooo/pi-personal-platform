@@ -15,7 +15,9 @@
     "extensions": [
       "./extensions/profile-injector.ts",
       "./extensions/memory-tool.ts",
-      "./extensions/auto-memory-injector.ts"
+      "./extensions/auto-memory-injector.ts",
+      "./extensions/resume-project.ts",
+      "./extensions/handoff.ts"
     ]
   },
   "peerDependencies": {
